@@ -1,0 +1,13 @@
+[Unit]
+Description=Unwritten: Flathub user remote and hardened_malloc for Flatpaks
+# Once per user. Delete the file to run it again at the next login.
+ConditionPathExists=!%h/.local/state/unwritten/flatpak-setup.done
+# Not for system users such as gdm, which runs the login screen in its own session.
+ConditionUser=!@system
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/unwritten/flatpak-setup
+
+[Install]
+WantedBy=default.target
