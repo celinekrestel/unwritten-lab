@@ -61,41 +61,89 @@ The lab has its own key, separate from Unwritten's.
 3. Settings → Environments → New environment `signing`. Deployment branches: `main` only. Add the environment secret `SIGNING_SECRET` with the contents of `cosign.private`.
 4. Keep `cosign.private` in your password manager, then delete the local file.
 5. Commit `cosign.pub` and push `main`. Without `cosign.pub` the build stops on purpose (`signing-policy.sh`).
-6. After the first build, make the package `unwritten-lab` public (Package settings → Change visibility). Otherwise machines can't pull it without credentials.
+6. After the first build, check that the package `unwritten-lab` is public (Package settings). Built from this public repository, it was public right away. If it's private, change its visibility, or machines can't pull it without credentials.
 
 ## Testing on a spare disk
 
-Stock secureblue has no `run0` wrapper like Unwritten's, so its FAQ says `run0 -i` (because of exit code 203).
+secureblue's container policy rejects every image it doesn't list, and `bootc` follows that policy even without `--enforce-container-sigpolicy`. So before the switch, the test machine trusts the lab's key, for the lab image only, through three temporary files. That makes the first switch a signed one, too.
 
-1. Install secureblue's GNOME image from its ISO, or use an existing secureblue installation.
-2. Pin the current deployment:
-
-   ```shell
-   run0 -i ostree admin pin 0
-   ```
-
-3. Download the lab image. Nothing from it runs before the reboot:
+1. Before you boot the spare disk, note the key's checksum, in this repository's root:
 
    ```shell
-   run0 -i bootc switch ghcr.io/celinekrestel/unwritten-lab:latest
+   sha256sum cosign.pub
    ```
 
-   If `bootc` refuses because of layered packages: `run0 -i rpm-ostree rebase ostree-unverified-registry:ghcr.io/celinekrestel/unwritten-lab:latest`
-4. Copy the digest (`sha256:…`) of the staged image from `run0 -i bootc status`. Check it where `podman` works, for example on Unwritten (secureblue blocks rootless podman by default), in this repository's root:
+2. Install secureblue's GNOME image from its ISO, including its post-install steps (Secure Boot: `ujust enroll-secure-boot-keys`, then the password `secureblue` on the blue MOK screen). Or use an existing secureblue installation.
+3. Open a root shell. Stock secureblue has no `run0` wrapper like Unwritten's, so its FAQ says `run0 -i` (because of exit code 203). Steps 4 to 7 run in this shell.
 
    ```shell
-   podman run --rm -v "$PWD/cosign.pub:/cosign.pub:ro,z" ghcr.io/sigstore/cosign/cosign:v3.0.6 verify --key /cosign.pub ghcr.io/celinekrestel/unwritten-lab@sha256:…
+   run0 -i
    ```
 
-   If the check fails, don't reboot: `run0 -i rpm-ostree cleanup --pending`
-5. Reboot, then switch to the signed image:
+4. Pin the current deployment, so it stays in the boot menu:
 
    ```shell
-   run0 -i bootc switch --enforce-container-sigpolicy ghcr.io/celinekrestel/unwritten-lab:latest
+   ostree admin pin 0
    ```
 
-6. If secureblue's Secure Boot key isn't enrolled yet: `ujust enroll-secure-boot-keys`, reboot, and enter the password `secureblue` on the blue MOK screen.
-7. `ujust audit-secureblue`
+5. Create the three files. `/etc/containers/policy.json` mustn't exist yet; secureblue keeps its policy in `/usr/share/containers/`.
+
+   ```shell
+   ls /etc/containers/policy.json   # Must say "No such file or directory"
+   mkdir -p /etc/pki/containers /etc/containers/registries.d
+   curl -fsSLo /etc/pki/containers/unwritten-lab-bootstrap.pub https://raw.githubusercontent.com/celinekrestel/unwritten-lab/main/cosign.pub
+   sha256sum /etc/pki/containers/unwritten-lab-bootstrap.pub   # Must match step 1
+   ```
+
+   The policy accepts the lab image signed with this key, and nothing else:
+
+   ```shell
+   cat > /etc/containers/policy.json <<'EOF'
+   {
+       "default": [{"type": "reject"}],
+       "transports": {
+           "docker": {
+               "ghcr.io/celinekrestel/unwritten-lab": [
+                   {
+                       "type": "sigstoreSigned",
+                       "keyPath": "/etc/pki/containers/unwritten-lab-bootstrap.pub",
+                       "signedIdentity": {"type": "matchRepository"}
+                   }
+               ]
+           }
+       }
+   }
+   EOF
+   ```
+
+   The signature is stored next to the image in the registry, and this file tells bootc to look for it there. The lab image brings the same setting as `/etc/containers/registries.d/unwritten-lab.yaml`, written by `signing-policy.sh`:
+
+   ```shell
+   cat > /etc/containers/registries.d/unwritten-lab-bootstrap.yaml <<'EOF'
+   docker:
+     ghcr.io/celinekrestel/unwritten-lab:
+       use-sigstore-attachments: true
+   EOF
+   ```
+
+6. Switch. bootc checks the signature before it downloads the layers, and nothing from the image runs before the reboot:
+
+   ```shell
+   bootc switch --enforce-container-sigpolicy ghcr.io/celinekrestel/unwritten-lab:latest
+   ```
+
+   If `bootc` refuses because of layered packages: `rpm-ostree rebase ostree-image-signed:docker://ghcr.io/celinekrestel/unwritten-lab:latest`
+7. Remove the three files and leave the root shell. The new deployment takes over this `/etc` only when the machine shuts down, so it starts without them and uses the lab image's own policy:
+
+   ```shell
+   rm /etc/containers/policy.json /etc/containers/registries.d/unwritten-lab-bootstrap.yaml /etc/pki/containers/unwritten-lab-bootstrap.pub
+   exit
+   ```
+
+   If the machine rebooted before this step, run the `rm` on the lab system. Until then, image updates fail there, because two registries.d files name the same image.
+8. Reboot.
+9. Check the switch: `rpm-ostree status` shows the image as `ostree-image-signed:docker://ghcr.io/celinekrestel/unwritten-lab:latest`, and `run0 -i bootc upgrade --check` checks the signature again, now against the lab image's own policy.
+10. `ujust audit-secureblue`
 
 What to look at:
 
@@ -108,7 +156,7 @@ What to look at:
 
 ## Undoing
 
-- Test machine: boot the pinned entry, or `run0 -i bootc rollback`. Then `run0 -i ostree admin pin --unpin <index>`.
+- Test machine: boot the pinned entry, or `run0 -i bootc rollback`. Then `run0 -i ostree admin pin --unpin <index>`. If secureblue still has the three files from step 5 (step 7 skipped), remove them there too, or they keep shadowing secureblue's policy.
 - Everything else: delete this repository and the package `unwritten-lab`. Unwritten itself never changes.
 
 If the lab works out, its result goes into Unwritten in one commit, signed with Unwritten's key again.
