@@ -5,6 +5,7 @@
 # Undo for one user:
 #   flatpak override --user --reset
 #   flatpak override --user --reset com.valvesoftware.Steam
+#   flatpak override --user --reset org.mozilla.firefox
 #   rm ~/.local/state/unwritten/flatpak-setup.done    # Then it runs again at the next login
 set -euo pipefail
 
@@ -27,9 +28,12 @@ if [[ -z "${uarch}" || ! -f "${lib}" ]]; then
 fi
 flatpak override --user --filesystem=host-os:ro --env=LD_PRELOAD="/var/run/host${lib}"
 
-# 3. The known exception: Steam (secureblue FAQ, 'How do I install Steam?'). For other apps that crash
-#    with "fatal allocator error", run the same command with their app ID.
-flatpak override --user --unset-env=LD_PRELOAD --nofilesystem=host-os com.valvesoftware.Steam
+# 3. The known exceptions, which crash with hardened_malloc: Steam (secureblue FAQ, 'How do I install
+#    Steam?') and Firefox (crashed in the first lab test). For other apps that crash with "fatal
+#    allocator error", run the same command with their app ID.
+for app in com.valvesoftware.Steam org.mozilla.firefox; do
+    flatpak override --user --unset-env=LD_PRELOAD --nofilesystem=host-os "${app}"
+done
 
 mkdir -p "$(dirname "${done_file}")"
 touch "${done_file}"

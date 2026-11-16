@@ -20,10 +20,11 @@ secureblue's `iot-main-hardened` image has no desktop, but it already carries th
 | Hardening | a few sysctl settings and module blocks | secureblue's, see above |
 | Time | systemd-timesyncd | chrony with NTS |
 | DNS | systemd-resolved | Unbound; `ujust dns-selector resolver resolved` for the WireGuard profiles |
-| Flatpaks | system-wide | per user, with hardened_malloc |
+| Flatpaks | per user | per user, with hardened_malloc |
+| Command-line tools | Homebrew | Homebrew; its programs get hardened_malloc too |
 | Updates | manual | automatic, as secureblue sets it up |
 
-The kill switch, btrbk, the `run0` wrapper and Unwritten's GNOME settings are copies of Unwritten's files in `files/system`. A change in Unwritten has to be made here too.
+The kill switch, btrbk, the `run0` wrapper, the Homebrew setup (`/etc/profile.d/homebrew.sh`) and Unwritten's GNOME settings are copies of Unwritten's files in `files/system`. A change in Unwritten has to be made here too. Unwritten's `flatpak-to-user` isn't needed here, because secureblue installs Flatpaks per user from the start. As in Unwritten, the kill switch is on at every boot, so a machine without a WireGuard profile has no internet (see step 8 under Testing).
 
 **Taken out** (`files/scripts/`):
 
@@ -32,18 +33,18 @@ The kill switch, btrbk, the `run0` wrapper and Unwritten's GNOME settings are co
 
 **Ported from secureblue's desktop images:**
 
-- Flatpak hardening (`usr/libexec/unwritten/flatpak-setup`): once per user, Flathub becomes a user remote and every Flatpak gets hardened_malloc; Steam is exempt. `flatpak-system-helper` is masked.
+- Flatpak hardening (`usr/libexec/unwritten/flatpak-setup`): once per user, Flathub becomes a user remote and every Flatpak gets hardened_malloc. Steam and Firefox are exempt, because both crash with it. `flatpak-system-helper` is masked.
 - Service masks: bluetooth, geoclue, ModemManager, avahi, sssd, iscsi, thermald and a few more. cups stays.
 - GNOME defaults (`zz2-secureblue-defaults.gschema.override`): no extension installs from the web, no automount, no thumbnails.
 
-**Not ported:** Trivalent, the Xwayland switch, USBGuard, Homebrew, Bazaar, the codecs and secureblue's update notifications.
+**Not ported:** Trivalent, the Xwayland switch, automatic Flatpak updates, secureblue's own Homebrew setup (the lab has Unwritten's), Bazaar, the codecs and secureblue's update notifications. USBGuard and MAC randomization are in the base image; as on secureblue, `ujust setup-usbguard` and `ujust toggle-mac-randomization` switch them on.
 
 **Known gaps:**
 
 - `gstreamer1-plugin-openh264` is missing: secureblue removes Fedora's openh264 repository, so GNOME screencasts are saved as .webm.
 - secureblue's desktop zone doesn't open DHCPv6. Check that IPv6 works.
 - `rootflags=subvol=root,compress=zstd:1` isn't set, because it depends on the disk layout.
-- `ujust audit-secureblue` reads `IMAGE_ID`, takes this image for an IoT image and skips its desktop checks.
+- `ujust audit-secureblue` runs its desktop checks here too. Besides the opt-ins it lists on any secureblue machine (such as USBGuard, MAC randomization and a separate admin account), it fails on the Flatpak update timers, which aren't ported, and on the `flathub` remote, which isn't the verified subset.
 - dnf can't remove leftover dependencies here (secureblue deletes dnf's install records), so the scripts name them.
 
 ## Setting up signing (once)
@@ -66,6 +67,9 @@ The lab has its own key, separate from Unwritten's.
 ## Testing on a spare disk
 
 secureblue's container policy rejects every image it doesn't list, and `bootc` follows that policy even without `--enforce-container-sigpolicy`. So before the switch, the test machine trusts the lab's key, for the lab image only, through three temporary files. That makes the first switch a signed one, too.
+
+> [!WARNING]
+> Unwritten's kill switch is on from the lab's first boot. A machine without a WireGuard profile has no internet until you switch it off (step 8).
 
 1. Before you boot the spare disk, note the key's checksum, in this repository's root:
 
@@ -141,9 +145,28 @@ secureblue's container policy rejects every image it doesn't list, and `bootc` f
    ```
 
    If the machine rebooted before this step, run the `rm` on the lab system. Until then, image updates fail there, because two registries.d files name the same image.
-8. Reboot.
+8. Reboot. The kill switch is on now, and without a WireGuard profile there's no internet. On a test machine without profiles, switch it off for good:
+
+   ```shell
+   run0 -i systemctl disable --now killswitch.service
+   ```
+
+   `killswitch off` alone lasts only until the next reboot. To use profiles instead, run `ujust dns-selector resolver resolved` and import them as Unwritten's README describes ("VPN and kill switch"). `run0 -i systemctl enable --now killswitch.service` turns the kill switch back on.
 9. Check the switch: `rpm-ostree status` shows the image as `ostree-image-signed:docker://ghcr.io/celinekrestel/unwritten-lab:latest`, and `run0 -i bootc upgrade --check` checks the signature again, now against the lab image's own policy.
-10. `ujust audit-secureblue`
+10. Move the Flatpaks to plain Flathub. secureblue's first-login setup added the remote `flathub-verified` (verified apps only) and installed Flatseal from it. The lab's `flatpak-setup` adds `flathub`, all of Flathub, because Steam, mpv and Typora aren't verified. One remote avoids duplicate entries, and every app in `flathub-verified` is also in `flathub`. App data in `~/.var/app` and overrides such as Firefox's stay:
+
+    ```shell
+    flatpak remotes --user   # Must list flathub
+    apps=$(flatpak list --user --app --columns=application,origin | awk '$2 == "flathub-verified" {print $1}')
+    echo $apps
+    flatpak uninstall --user -y $apps
+    flatpak uninstall --user -y --unused
+    flatpak remote-delete --user flathub-verified
+    flatpak install --user -y flathub $apps
+    ```
+
+    If `remote-delete` refuses because something is still installed from `flathub-verified`, `flatpak list --user --columns=ref,origin` shows what.
+11. `ujust audit-secureblue`. It reports the `flathub` remote as unverified, on purpose.
 
 What to look at:
 
@@ -152,6 +175,7 @@ What to look at:
 - `flatpak override --user --show` and `modinfo xpad` (8BitDo controller)
 - WireGuard and the kill switch, after `ujust dns-selector resolver resolved`
 - Steam, printing, IPv6
+- Homebrew, set up as in Unwritten's README ("Homebrew"), with a tool such as `clamscan`: here hardened_malloc applies to brew's programs too, through `/etc/ld.so.preload`
 - Blu-ray: secureblue blocks `sr_mod`, `cdrom` and `udf`; `ujust override-enable-module` brings each one back
 
 ## Undoing
