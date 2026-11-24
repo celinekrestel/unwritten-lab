@@ -1,0 +1,342 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+
+##############################################
+##  Unwritten Lab: Unwritten on secureblue  ##
+##############################################
+
+# An experiment: can Unwritten stay lean and get secureblue's security core at the same time?
+# secureblue's IoT image has no desktop, but it already carries that core: its kernel and kernel
+# arguments, sysctl, the module blocklist, all SELinux modules (including those for Flatpak and user
+# namespaces), the patched bwrap, hardened_malloc, NTS time, PAM hardening, no SUID files and no
+# sudo. GNOME goes on top piece by piece, as in Unwritten's recipe.yml. What secureblue adds for
+# servers comes out again. Of secureblue's desktop parts, only those that matter here are ported:
+# Flatpak hardening, service masks and GNOME defaults.
+#
+# Setting up signing, testing and undoing: see README.md.
+
+name: unwritten-lab
+description: Unwritten on secureblue's iot-main-hardened (experimental)
+base-image: ghcr.io/secureblue/iot-main-hardened
+image-version: 45
+cosign-version: none
+nushell-version: none
+blue-build-tag: none
+
+# Every module is fixed to one exact build, with the same digests as Unwritten's recipe.yml.
+
+modules:
+
+#################
+##  Own files  ##
+#################
+
+# files/system holds copies of Unwritten's files (kill switch, btrbk, run0 wrapper, GNOME defaults)
+# and what the lab adds (Flatpak setup, secureblue's GNOME defaults). The copies don't follow
+# Unwritten by themselves: a change there has to be made here too.
+# Left out of Unwritten's files on purpose:
+# - usr/lib/sysctl.d/90-hardening.conf sorts after secureblue's 55-hardening.conf and would lower
+#   kernel.kptr_restrict from 2 to 1. secureblue sets everything else in it too.
+# - The core dump files in etc/: secureblue turns core dumps off itself.
+# - usr/lib/dracut/dracut.conf.d/: secureblue builds its own initramfs, and leaving out clevis and
+#   tpm2 would break its LUKS unlock tools.
+# - etc/flatpak/remotes.d/: no system Flatpak remote here. The same file sits in usr/share/unwritten/
+#   as the source of the user remote.
+
+  - type: files
+    source: ghcr.io/blue-build/modules/files@sha256:c93091889e5552a25d8169f8b5ba6d2cf201fd924f342025e6f2388c1ac4a356
+    files:
+      - source: system
+        destination: /
+
+##########################################################
+##  Out: what secureblue's IoT image brings for servers  ##
+##########################################################
+
+# Virtualization and Docker, toolbox, the SSH server, greenboot, IoT onboarding, and secureblue's
+# server profile (idle shells closed after 5 minutes, TCP SACK off, SSH open in the firewall).
+# The script explains each part.
+
+  - type: script
+    source: &script ghcr.io/blue-build/modules/script@sha256:d6076360da9195e2a6d781043a1b049bede3d2389757912a828a957bc78929b8
+    scripts:
+      - teardown.sh
+
+#######################################################
+##  In: GNOME and tools, as in Unwritten's recipe.yml  ##
+#######################################################
+
+# Unwritten's install list, with two changes:
+# - gstreamer1-plugin-openh264 is missing: secureblue removes Fedora's openh264 repository
+#   (its files/scripts/removeunusedrepos.sh), so GNOME screencasts are saved as .webm.
+# - amd-gpu-firmware and amd-ucode-firmware are listed, in case the IoT base lacks them.
+
+  - type: dnf
+    source: ghcr.io/blue-build/modules/dnf@sha256:e6cffa08197dc55f2cdc9f596e5bae6af4dc82e8a33884ff5a4edccc251b0218
+    install:
+      packages:
+        - fedora-logos
+        # Hardware & system sensors
+        - alsa-sof-firmware
+        - amd-gpu-firmware
+        - amd-ucode-firmware
+        - hplip
+        - lshw
+        - mt7xxx-firmware
+        - nvme-cli
+        - nvtop
+        - powerstat
+        - sane-backends-drivers-scanners
+        - smartmontools
+        - gnome-keyring
+        - pipewire-pulseaudio
+        - wireplumber
+        - xorg-x11-server-Xwayland
+        # System tools & utilities
+        - atuin
+        - bc
+        - btop
+        - btrbk
+        - cryptsetup
+        - cups
+        - distrobox
+        - firewalld
+        - flatpak
+        - fzf
+        - git
+        - libnotify
+        - lynis
+        - mbuffer
+        - micro
+        - openssl
+        - pv
+        - rsync
+        - symlinks
+        - systemd-oomd-defaults
+        - unzip
+        - wget
+        - wl-clipboard
+        - xwininfo
+        - zram-generator-defaults
+        - zstd
+        - zsh
+        # Networking
+        - NetworkManager-config-connectivity-fedora
+        - NetworkManager-wifi
+        - wireguard-tools
+        # GNOME
+        - gdm
+        - glycin-thumbnailer
+        - gnome-bluetooth
+        - gnome-color-manager
+        - gnome-control-center
+        - gnome-disk-utility
+        - gnome-session-wayland-session
+        - gnome-settings-daemon
+        - gnome-shell
+        - gnome-shell-extension-caffeine
+        - gnome-shell-extension-appindicator
+        - gnome-shell-extension-blur-my-shell
+        - gnome-shell-extension-just-perfection
+        - gnome-shell-extension-background-logo
+        - gvfs-fuse
+        - gvfs-mtp
+        - nautilus
+        - ptyxis
+        - xdg-desktop-portal-gnome
+        - xdg-user-dirs-gtk
+        # Fonts & L10N
+        - fira-code-fonts
+        - glibc-langpack-de
+        - glibc-langpack-en
+        - glibc-langpack-fr
+        - google-noto-sans-cjk-vf-fonts
+
+      # The weak dependencies Unwritten keeps out; its recipe.yml gives the reasons. Not here:
+      # unbound-anchor, because secureblue resolves names with Unbound.
+      exclude:
+        - alacritty
+        - avahi-tools
+        - braille-printer-app
+        - cpp
+        - cups-browsed
+        - cups-filters-driverless
+        - evolution-ews-core
+        - exiv2
+        - fuzzel
+        - gnome-remote-desktop
+        - gnome-tour
+        - google-noto-sans-mono-cjk-vf-fonts
+        - gst-thumbnailers
+        - ibus
+        - intel-mediasdk
+        - intel-vpl-gpu-rt
+        - ipp-usb
+        - libcamera-ipa
+        - libsane-hpaio
+        - malcontent-control
+        - nss-mdns
+        - pipewire-plugin-libcamera
+        - python3-perf
+        - rygel
+        - sane-backends-drivers-cameras
+        - swaylock
+        - usbmuxd
+        - waybar
+
+#########################################################
+##  Kernel modules for the 8BitDo controller, and art  ##
+#########################################################
+
+# secureblue ships its own kernel, so kernel-modules-extra (for xpad) has to come from secureblue's
+# repository in exactly that version; secureblue builds it (see its files/scripts/installkernel.sh).
+# If it isn't there, the build goes on and says so. 'modinfo xpad' shows the result.
+
+  - type: script
+    source: *script
+    snippets:
+      - 'kver="$(rpm -q --qf "%{VERSION}-%{RELEASE}" kernel-core)"; dnf5 -y install "kernel-modules-extra-${kver}" || echo "WARNING: kernel-modules-extra-${kver} is not available; xpad (8BitDo) will be missing"'
+      - 'dnf5 -y install f$(rpm -E %fedora)-backgrounds-gnome'
+
+#################################################
+##  Out: leftovers, from Unwritten's own list  ##
+#################################################
+
+# After all installs, so that no weak dependency brings them back. To see the image without this
+# step, comment it out.
+
+  - type: script
+    source: *script
+    scripts:
+      - lean.sh
+
+#####################
+##  GNOME and PAM  ##
+#####################
+
+# Compiles zz1-unwritten (Unwritten's) and zz2-secureblue-defaults (secureblue's GNOME defaults).
+# --strict stops the build if a key no longer exists.
+# fprintd isn't in the image, so fingerprint login goes if the profile has it; secureblue's
+# with-faillock stays.
+
+  - type: script
+    source: *script
+    snippets:
+      - glib-compile-schemas --strict /usr/share/glib-2.0/schemas
+      - 'if authselect current | grep -q with-fingerprint; then authselect disable-feature with-fingerprint; fi'
+
+##################
+##  os-release  ##
+##################
+
+# Only the name shown on screen. ID, IMAGE_ID and the rest stay secureblue's, because its tools
+# read them.
+
+  - type: os-release
+    source: ghcr.io/blue-build/modules/os-release@sha256:64c6ef094a55bc10073bbce4316e3ec5a4f357e396f449469fdd47844ed6ff66
+    properties:
+      PRETTY_NAME: Unwritten Lab (secureblue IoT base)
+
+########################
+##  Systemd services  ##
+########################
+
+  - type: systemd
+    source: ghcr.io/blue-build/modules/systemd@sha256:2d2b3d8f7388a999544dbaa90de639f4bbe37f2f6adb4af8dabce5cb5cd4090a
+    system:
+      enabled:
+        - gdm.service
+        - firewalld.service
+        - killswitch.service                       # See Unwritten's README: Notes, 'VPN and kill switch'
+        - btrbk.timer
+      masked:
+        # What secureblue's desktop images switch off (its recipes/common/desktop-systemd.yml),
+        # except cups, which the LaserJet needs. Masking a unit that isn't installed does no harm.
+        - flatpak-system-helper.service            # Root helper for system Flatpaks; the lab uses user Flatpaks
+        - flatpak-add-fedora-repos.service
+        - bluetooth.service                        # Back with 'run0 systemctl unmask bluetooth.service' and 'ujust set-bluetooth-modules on'
+        - geoclue.service
+        - ModemManager.service
+        - avahi-daemon.service
+        - avahi-daemon.socket
+        - sssd.service
+        - sssd-kcm.service
+        - sssd-kcm.socket
+        - iscsid.service
+        - iscsid.socket
+        - iscsiuio.service
+        - iscsiuio.socket
+        - uresourced.service
+        - low-memory-monitor.service
+        - thermald.service
+        - alsa-state.service
+        # From Unwritten's recipe.yml
+        - systemd-remount-fs.service
+        - mdmonitor.service
+        - raid-check.timer
+    user:
+      enabled:
+        - gcr-ssh-agent.socket                     # The SSH agent that KeePassXC loads its keys into
+        - unwritten-flatpak-setup.service          # Once per user: Flathub user remote, hardened_malloc for Flatpaks
+
+########################
+##  Kernel arguments  ##
+########################
+
+# secureblue's own kernel arguments come with the base image (/usr/lib/bootc/kargs.d/10-secureblue.toml).
+# rootflags=subvol=root,compress=zstd:1 from Unwritten is left out: it only fits Fedora's default
+# btrfs layout, and a test disk may have another one.
+
+  - type: kargs
+    source: ghcr.io/blue-build/modules/kargs@sha256:e54b580450f2f6674721b8fc752686cd198fdfbe2210a2502a02dd16738ad247
+    kargs:
+      - plymouth.enable=0
+      - rd.plymouth=0
+      - rd.info=1
+      - preempt=full
+      - hid_apple.fnmode=2
+
+########################################################
+##  Signature policy, not the BlueBuild signing module  ##
+########################################################
+
+  - type: script
+    source: *script
+    scripts:
+      - signing-policy.sh
+
+#################
+##  Initramfs  ##
+#################
+
+  - type: initramfs
+    source: ghcr.io/blue-build/modules/initramfs@sha256:9959ae9f131c68019a189c6840db5c080db238f5ccb249651ff39756f623aad3
+
+#########################
+##  No SUID, clean up  ##
+#########################
+
+# secureblue strips SUID/SGID bits as one of its last build steps, before this recipe adds anything.
+# Running its script again covers the packages added here. The log names every file it changes.
+
+  - type: script
+    source: *script
+    scripts:
+      - removesuid.sh
+
+  - type: script
+    source: *script
+    snippets:
+      - rm -rf /usr/share/doc /usr/src
+      - dnf5 clean all
+
+######################
+##  Lint the image  ##
+######################
+
+# Keep this as the last module, as in Unwritten's recipe.yml.
+
+  - type: script
+    source: *script
+    snippets:
+      - bootc container lint

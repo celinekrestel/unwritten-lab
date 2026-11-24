@@ -1,0 +1,39 @@
+#!/bin/bash
+# Per-user Flatpak setup, run once at login by unwritten-flatpak-setup.service.
+# A simplified port of secureblue's secureblue-flatpak-setup and harden_flatpak.py (Apache-2.0).
+#
+# Undo for one user:
+#   flatpak override --user --reset
+#   flatpak override --user --reset com.valvesoftware.Steam
+#   flatpak override --user --reset org.mozilla.firefox
+#   rm ~/.local/state/unwritten/flatpak-setup.done    # Then it runs again at the next login
+set -euo pipefail
+
+done_file="${HOME}/.local/state/unwritten/flatpak-setup.done"
+
+# 1. Flathub as a user remote. System Flatpaks need flatpak-system-helper, a root service that the
+#    lab masks, as secureblue does. The remote comes from a local file, so this works offline too,
+#    for example while the kill switch waits for the tunnel. Unlike secureblue (verified apps only),
+#    this is all of Flathub: Steam and Discord aren't verified.
+flatpak remote-add --user --if-not-exists flathub /usr/share/unwritten/flathub.flatpakrepo
+
+# 2. hardened_malloc for every Flatpak: the host's library via LD_PRELOAD, in the best variant this
+#    CPU supports (x86-64-v3 on a Ryzen 5000). The price: every Flatpak may read the host's /usr.
+uarch="$(/usr/lib64/ld-linux-x86-64.so.2 --help 2>/dev/null \
+    | sed -n 's/^[[:space:]]*\(x86-64-v[0-9]\)[[:space:]].*(supported, searched).*/\1/p' \
+    | head -n 1 || true)"
+lib="/usr/lib64/glibc-hwcaps/${uarch}/libhardened_malloc.so"
+if [[ -z "${uarch}" || ! -f "${lib}" ]]; then
+    lib="/usr/lib64/libhardened_malloc.so"
+fi
+flatpak override --user --filesystem=host-os:ro --env=LD_PRELOAD="/var/run/host${lib}"
+
+# 3. The known exceptions, which crash with hardened_malloc: Steam (secureblue FAQ, 'How do I install
+#    Steam?') and Firefox (crashed in the first lab test). For other apps that crash with "fatal
+#    allocator error", run the same command with their app ID.
+for app in com.valvesoftware.Steam org.mozilla.firefox; do
+    flatpak override --user --unset-env=LD_PRELOAD --nofilesystem=host-os "${app}"
+done
+
+mkdir -p "$(dirname "${done_file}")"
+touch "${done_file}"

@@ -1,0 +1,18 @@
+# GNOME defaults from secureblue's Silverblue images (its files/gschema-overrides/zz1-secureblue.gschema.override),
+# without its branding, favourites and theme. Delete a block to get GNOME's own default back.
+
+# Extensions can't be installed from extensions.gnome.org. The extension RPMs in the image keep working.
+[org.gnome.shell]
+allow-extension-installation=false
+
+# A plugged-in drive isn't mounted or opened by itself. Click it in Files; that also asks for a LUKS passphrase.
+[org.gnome.desktop.media-handling]
+automount=false
+automount-open=false
+
+# No thumbnails: thumbnailers parse untrusted files with weak sandboxing.
+[org.gnome.desktop.thumbnailers]
+disable-all=true
+
+[org.gnome.nautilus.preferences]
+show-image-thumbnails='never'
